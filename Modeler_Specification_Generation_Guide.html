@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Modeler Specification Generation Guide</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         font-size: 15px; line-height: 1.75; color: #1a1a1a;
+         background: #fff; padding: 2.5rem; max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 24px; font-weight: 600; margin: 0 0 2rem; color: #111; }
+  h2 { font-size: 18px; font-weight: 600; margin: 2.2rem 0 0.6rem; color: #111;
+       border-bottom: 1px solid #e5e7eb; padding-bottom: 4px; }
+  h3 { font-size: 15px; font-weight: 600; margin: 1.5rem 0 0.4rem; color: #374151; }
+  p  { margin-bottom: 0.6rem; }
+  ul, ol { margin: 0.4rem 0 0.8rem 1.4rem; }
+  li { margin-bottom: 0.25rem; }
+  code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+         font-size: 12.5px; background: #f3f4f6; padding: 1px 5px; border-radius: 4px; }
+  pre  { background: #f8f9fa; border: 1px solid #e5e7eb; border-radius: 6px;
+         padding: 1rem; overflow-x: auto; margin: 0.6rem 0 1rem; }
+  pre code { background: none; padding: 0; font-size: 13px; }
+  table { border-collapse: collapse; width: 100%; margin: 0.8rem 0 1.2rem; font-size: 14px; }
+  th { background: #f3f4f6; font-weight: 600; text-align: left;
+       padding: 8px 12px; border: 1px solid #d1d5db; }
+  td { padding: 7px 12px; border: 1px solid #d1d5db; vertical-align: top; }
+  tr:nth-child(even) td { background: #fafafa; }
+  hr { border: none; border-top: 1px solid #e5e7eb; margin: 2rem 0; }
+  blockquote { border-left: 3px solid #d1d5db; padding-left: 1rem; color: #6b7280;
+               margin: 0.8rem 0; }
+  a { color: #0055cc; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<h1>Modeler Guide: Specification Generation</h1>
+<p>The generator (<code>archimate_spec_v3.py</code>) reads an ArchiMate XML model and produces a Confluence-formatted HTML spec for a named <strong>ApplicationFunction</strong> element. This guide describes what to model and how to document elements and relations so the output is correct.</p>
+<hr />
+<h2>1. The Target Element</h2>
+<p>The generator is run against a single element by name. Its <strong>documentation field</strong> becomes the body of the spec. Everything else (relations, child elements) is derived from what that element connects to.</p>
+<p>Any element type can be targeted. When multiple elements share the same name, the generator prefers <strong>ApplicationFunction</strong> — otherwise it takes the first match found in the model.</p>
+<hr />
+<h2>2. Element Documentation — Structure</h2>
+<p>The documentation field is rendered line by line. Several lines have special meaning:</p>
+<table>
+<thead>
+<tr>
+<th>Line content</th>
+<th>What it renders</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Description: some text</code></td>
+<td>Bold <strong>Description:</strong> label followed by the text</td>
+</tr>
+<tr>
+<td><code>technically</code> (alone on a line)</td>
+<td>Bold <strong>Technically:</strong> label</td>
+</tr>
+<tr>
+<td><code>&lt;loopLabel&gt;</code> (alone, any word)</td>
+<td>Italic loop/iteration label; body below is indented +40 px</td>
+</tr>
+<tr>
+<td><code>&lt;/loopLabel&gt;</code> (alone)</td>
+<td>Closes the loop; indentation returns</td>
+</tr>
+<tr>
+<td><code>˝relationName˝</code></td>
+<td>Replaced with an inline rendered relation line (see section 4)</td>
+</tr>
+</tbody>
+</table>
+<p>All other lines are plain text, rendered with inline token colorization (see section 3).</p>
+<hr />
+<h2>3. Inline Text Tokens</h2>
+<p>Inside any documentation text (element or relation), these patterns are colorized automatically:</p>
+<table>
+<thead>
+<tr>
+<th>Pattern</th>
+<th>Example</th>
+<th>Rendered as</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>{variableName}</code></td>
+<td><code>{customerId}</code></td>
+<td>Green italic monospace</td>
+</tr>
+<tr>
+<td><code>'UPPERCASE_VALUE'</code></td>
+<td><code>'ACTIVE'</code></td>
+<td>Magenta — must start with uppercase letter; only A–Z, 0–9, <code>_</code>, <code>(</code>, <code>)</code>, <code>:</code> allowed</td>
+</tr>
+<tr>
+<td><code>[type name]</code></td>
+<td><code>[table CUSTOMER]</code></td>
+<td>Blue monospace — type must be one of: <code>register</code>, <code>table</code>, <code>view</code>, <code>file</code>, <code>select</code>, <code>definition</code>, <code>folder</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Note:</strong> lowercase constants like <code>'active'</code> are not colorized. The constant pattern requires the value to start with an uppercase letter.</p>
+<hr />
+<h2>4. Abbreviation Mechanism — Embedding Relations in Description</h2>
+<p>A relation can be rendered <strong>inline</strong> within the element description by placing <code>˝relationName˝</code> (double acute accent, U+02DD) at the desired point in the text. The generator replaces the token with the formatted relation line.</p>
+<p><strong>Requirements:</strong>
+- The relation must have its <strong>name</strong> attribute set in the model — the token value must match the relation name exactly.
+- The relation's source must be the element being documented.</p>
+<p><strong>Gap for modelers:</strong> Archi does not display relation names prominently. Setting the name field on a relation is easy to forget. If the abbreviation token does not resolve, the raw <code>˝text˝</code> appears verbatim in the output.</p>
+<p>Relations rendered via abbreviation are <strong>excluded from the Relations section</strong> at the bottom of the spec. If all outgoing relations are embedded this way, the Relations section shows "All relations already described above."</p>
+<hr />
+<h2>5. Access Relations</h2>
+<p>An <strong>AccessRelationship</strong> from the function to a Data Object represents a data interaction. How it renders depends on the <strong>profile</strong> and the relation's <strong>documentation</strong>.</p>
+<h3>5.1 Determining the label</h3>
+<table>
+<thead>
+<tr>
+<th>Condition</th>
+<th>Label</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Profile set</td>
+<td>Profile name (used as-is)</td>
+</tr>
+<tr>
+<td>No profile, no <code>accessType</code></td>
+<td><code>write</code></td>
+</tr>
+<tr>
+<td>No profile, <code>accessType = 1</code></td>
+<td><code>read</code></td>
+</tr>
+<tr>
+<td>No profile, <code>accessType = 2</code></td>
+<td><code>write</code></td>
+</tr>
+<tr>
+<td>No profile, <code>accessType = 3</code></td>
+<td><code>read/write</code></td>
+</tr>
+</tbody>
+</table>
+<p>The direction word appended to the label is <strong><code>from</code></strong> for <code>read</code> and <code>select</code>; <strong><code>into</code></strong> for everything else.</p>
+<p>Generic rendering (no special profile): <code>{label} {from|into} {Target Name}</code> followed by relation documentation in gray.</p>
+<hr />
+<h3>5.2 Profile: SELECT</h3>
+<p>Set the relation's profile to <strong>SELECT</strong> (case-insensitive). The relation documentation drives the output.</p>
+<p><strong>Tag:</strong> <code>&lt;sellist&gt;...&lt;/sellist&gt;</code> — exact lowercase.</p>
+<p><strong>Output structure:</strong></p>
+<pre><code>select
+    {each line of sellist, indented}
+from  {Target Name}
+    {rest of relation doc, indented, gray}
+</code></pre>
+<p><strong>Documentation example:</strong></p>
+<pre><code>&lt;sellist&gt;
+{id}, {name}, {status}
+&lt;/sellist&gt;
+WHERE {tenantId} = :tenantId
+AND {status} = 'ACTIVE'
+</code></pre>
+<p><strong>Generated output:</strong></p>
+<pre><code>select
+    {id}, {name}, {status}
+from  CUSTOMER_PROFILE
+    WHERE {tenantId} = :tenantId
+    AND {status} = 'ACTIVE'
+</code></pre>
+<p>Text outside the <code>&lt;sellist&gt;</code> tag (before or after) becomes the "rest of doc" — rendered below the <code>from</code> line, indented and gray.</p>
+<hr />
+<h3>5.3 Profile: UPDATE</h3>
+<p>Set the relation's profile to <strong>UPDATE</strong> (case-insensitive). The relation documentation drives the output.</p>
+<p><strong>Tag:</strong> <code>&lt;updList&gt;...&lt;/updList&gt;</code> — mixed case, exact spelling.</p>
+<p><strong>Output structure:</strong></p>
+<pre><code>update  {Target Name}
+    {each line of updList, indented}
+    {rest of relation doc, indented, gray}
+</code></pre>
+<p><strong>Documentation example:</strong></p>
+<pre><code>&lt;updList&gt;
+{status} = :newStatus
+{updatedAt} = SYSDATE
+{updatedBy} = {userId}
+&lt;/updList&gt;
+WHERE {id} = :id
+</code></pre>
+<p><strong>Generated output:</strong></p>
+<pre><code>update  CUSTOMER_PROFILE
+    {status} = :newStatus
+    {updatedAt} = SYSDATE
+    {updatedBy} = {userId}
+    WHERE {id} = :id
+</code></pre>
+<hr />
+<h3>5.4 <code>[select]</code> Named Target</h3>
+<p>For verbatim SQL or complex queries that don't fit the SELECT profile pattern, create a <strong>Data Object</strong> whose name starts with <code>[select]</code> — for example <code>[select] GetActiveCustomers</code>.</p>
+<ul>
+<li>The <strong>Data Object's own documentation</strong> is rendered as a monospace preformatted block (verbatim, no colorization).</li>
+<li>The <strong>relation's documentation</strong> is appended line by line after it, with inline colorization.</li>
+<li>The relation's profile and <code>accessType</code> are ignored — the <code>[select]</code> name prefix takes precedence.</li>
+</ul>
+<p>Use this when the full query text needs to be preserved exactly, including multi-line SQL.</p>
+<hr />
+<h3>5.5 Tag casing — known inconsistency</h3>
+<table>
+<thead>
+<tr>
+<th>Tag</th>
+<th>Required casing</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>&lt;sellist&gt;</code></td>
+<td>all lowercase</td>
+</tr>
+<tr>
+<td><code>&lt;updList&gt;</code></td>
+<td>mixed case — capital L</td>
+</tr>
+</tbody>
+</table>
+<p>This inconsistency is known and will be corrected. Until then, use the exact casings above.</p>
+<hr />
+<h2>6. Other Relation Types</h2>
+<p>These are shown in the <strong>Relations section</strong> of the spec (or inline via abbreviation). They carry no XML tag conventions — only the relation documentation field is used.</p>
+<table>
+<thead>
+<tr>
+<th>Relation type</th>
+<th>Outgoing label</th>
+<th>Incoming label</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CompositionRelationship</td>
+<td><code>composed of</code></td>
+<td><code>is a part of</code></td>
+</tr>
+<tr>
+<td>TriggeringRelationship</td>
+<td><code>triggers</code></td>
+<td><code>is triggered by</code></td>
+</tr>
+<tr>
+<td>ServingRelationship</td>
+<td><code>is used by</code></td>
+<td><code>use</code></td>
+</tr>
+<tr>
+<td>AssignmentRelationship*</td>
+<td><code>provides</code></td>
+<td><code>is implemented in</code></td>
+</tr>
+</tbody>
+</table>
+<p>* Only when source is ApplicationComponent / SystemSoftware / TechnologyService and target is ApplicationFunction / ApplicationProcess.</p>
+<p>Relations with labels <code>composed of</code>, <code>is a part of</code>, <code>triggers</code>, <code>is triggered by</code>, <code>provides</code>, <code>is implemented in</code>, <code>use</code>, <code>is used by</code> are <strong>grouped</strong> in the Relations section — the label appears once, followed by a bulleted list of names. Access relation labels (select, update, write, read, read/write, custom profiles) are rendered individually with their documentation.</p>
+<hr />
+<h2>7. Composition to Same-Type Element</h2>
+<p>A <strong>CompositionRelationship</strong> from an ApplicationFunction to another ApplicationFunction causes the child's full spec to be <strong>embedded inline</strong> in the parent spec (recursively). This is triggered via the abbreviation mechanism: place <code>˝relationName˝</code> in the parent's description at the point where the child spec should appear.</p>
+<p>If the composed target is a different element type, it is rendered as a plain object reference instead.</p>
+<hr />
+<h2>8. Quick Checklist</h2>
+<ul>
+<li>[ ] If multiple elements share the same name, ensure the intended one is <strong>ApplicationFunction</strong> (preferred) or is the first occurrence in the model</li>
+<li>[ ] Access relation has correct <strong>profile</strong> set (SELECT / UPDATE / or none for write/read)</li>
+<li>[ ] <code>&lt;sellist&gt;</code> tag is all lowercase; <code>&lt;updList&gt;</code> tag has capital L</li>
+<li>[ ] <code>[select]</code> Data Object has the full query in its <strong>own documentation field</strong></li>
+<li>[ ] Any relation referenced via <code>˝abbreviation˝</code> has its <strong>name field set</strong> on the relation</li>
+<li>[ ] Inline constants use <strong>uppercase</strong> (e.g. <code>'ACTIVE'</code>, not <code>'active'</code>)</li>
+<li>[ ] Object references use a valid prefix: <code>[table …]</code>, <code>[view …]</code>, <code>[register …]</code>, etc.</li>
+</ul>
+</body>
+</html>
