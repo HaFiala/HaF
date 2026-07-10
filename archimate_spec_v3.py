@@ -37,6 +37,22 @@ C_BLUE        = "color:var(--ds-text-accent-blue,#0055cc)"
 C_GREEN       = "color:var(--ds-text-accent-green,#216e4e)"
 C_GRAY        = "color:var(--ds-text-accent-gray,#44546f)"
 C_MAGENTA     = "color:var(--ds-background-accent-magenta-bolder,#ae4787)"
+C_SQL_KW      = "color:#003d99;font-size:11px;font-weight:bold;"
+
+# SQL keywords recognised at the start of a line (longest match first)
+_SQL_KW_SET = {
+    "select distinct", "select", "from", "where",
+    "inner join", "left join", "right join", "full outer join", "full join", "cross join", "join",
+    "group by", "order by", "having",
+    "insert into", "insert", "update", "set", "delete from", "delete",
+    "with", "union all", "union",
+    "case", "when", "then", "else", "end",
+    "on", "into", "values",
+}
+_SQL_KW_RE = re.compile(
+    r'^(' + '|'.join(re.escape(k) for k in sorted(_SQL_KW_SET, key=len, reverse=True)) + r')(\s|$)',
+    re.IGNORECASE
+)
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +174,7 @@ def extract_sellist(doc_text):
 _UPDLIST_RE = re.compile(r'<updList>(.*?)</updList>', re.DOTALL)
 
 _SQL_RE = re.compile(r'<sql>(.*?)</sql>', re.DOTALL)
+_TBL_RE = re.compile(r'<tbl>(.*?)</tbl>', re.DOTALL)
 
 
 def extract_updlist(doc_text):
@@ -178,8 +195,8 @@ def extract_updlist(doc_text):
 # ---------------------------------------------------------------------------
 
 def conf_var(name):
-    """Render a {variableName} with green+code+em styling."""
-    inner = f'<em><span style="{C_GREEN}"><code>{escape(name)}</code></span></em>'
+    """Render a {variableName} with green+italic+code styling."""
+    inner = f'<span style="{C_GREEN};font-style: italic;"><code>{escape(name)}</code></span>'
     return '{' + inner + '}'
 
 
@@ -201,6 +218,38 @@ def conf_keyword(word):
 def conf_desc(text):
     """Render description/comment text in gray."""
     return f'<span style="{C_GRAY}">{escape(text)}</span>'
+
+
+def sql_kw(word):
+    """Render an explicit SQL keyword in dark-blue bold 11px."""
+    return f'<span style="{C_SQL_KW}">{escape(word)}</span>'
+
+
+def colorize_sql_line(text):
+    """
+    Colorize a single SQL line: if it starts with a recognised SQL keyword,
+    render the keyword in dark-blue bold, then apply colorize_text() to the rest.
+    Otherwise apply colorize_text() to the whole line.
+    Called at render time so colorize_text is defined below — forward ref resolved
+    because this is only invoked after module load.
+    """
+    text = text.strip()
+    m = _SQL_KW_RE.match(text)
+    if m:
+        kw   = m.group(1)
+        rest = text[len(kw):]
+        return f'{sql_kw(kw)}{colorize_text(rest)}'
+    return colorize_text(text)
+
+
+def _sql_div(inner_html):
+    """Wrap SQL <p> lines in the shared monospace bordered div."""
+    return (
+        f'<div style="border:1px solid #dde0d8;border-radius:4px;'
+        f'background:#f8f8f0;padding:8px;margin:4px 0;'
+        f'font-family:SFMono-Regular,Consolas,&quot;Liberation Mono&quot;,Menlo,monospace;'
+        f'font-size:12px;{C_GRAY}">{inner_html}</div>'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +306,7 @@ def colorize_text(text):
             result.append(f"'{conf_const(const_match)}'")
         elif var_match:
             result.append(
-                '{' + f'<em><span style="{C_GREEN}"><code>{escape(var_match)}</code></span></em>' + '}'
+                '{' + f'<span style="{C_GREEN};font-style: italic;"><code>{escape(var_match)}</code></span>' + '}'
             )
 
     result.append(escape(text[pos:]))
@@ -354,6 +403,49 @@ def resolve_abbreviations(description, source_id, relations, elements, profiles)
             label       = access_type_label(rel, get_profile_name(rel, profiles))
             dir_word    = direction_word(label)
 
+            # [parameters] data object — embed documentation as structured sub-section
+            if target_name.lower().startswith('[parameters]'):
+                params_doc = get_doc(target_el) if target_el is not None else ""
+                label_lower    = label.lower()
+                profile_name_v = get_profile_name(rel, profiles)
+                src_el   = elements.get(source_id)
+                src_name = get_name(src_el) if src_el is not None else ""
+                is_api_src = src_name.lower().startswith('[api]')
+                if is_api_src:
+                    if label_lower in ("read", "input"):
+                        subheader = "Request"
+                    elif label_lower in ("write", "output"):
+                        subheader = "Response"
+                    else:
+                        subheader = escape(target_name)
+                else:
+                    if label_lower in ("read", "input"):
+                        subheader = "Input parameters"
+                    elif label_lower in ("write", "output"):
+                        subheader = "Output"
+                    else:
+                        subheader = escape(target_name)
+                lines = [
+                    '__BLOCK__<section>',
+                    f'__BLOCK__<p><strong><i>{subheader}</i></strong></p>',
+                ]
+                if params_doc:
+                    proc = _SQL_RE.sub(
+                        lambda m2: f'__BLOCK__{_sql_div("".join(f"<p>{colorize_sql_line(l)}</p>" for l in m2.group(1).strip().splitlines() if l.strip()))}',
+                        params_doc
+                    )
+                    proc = _TBL_RE.sub(_tbl_to_block, proc)
+                    for part in proc.splitlines():
+                        part = part.strip()
+                        if not part:
+                            continue
+                        if part.startswith('__BLOCK__'):
+                            lines.append(part)
+                        else:
+                            lines.append(f'__BLOCK__<p>{colorize_text(part)}</p>')
+                lines.append('__BLOCK__</section>')
+                return '\n'.join(lines)
+
             if label.lower() == "select":
                 if target_name.lower().startswith("[select]"):
                     target_doc = get_doc(target_el) if target_el is not None else ""
@@ -377,46 +469,36 @@ def resolve_abbreviations(description, source_id, relations, elements, profiles)
                 sellist, rest_doc = extract_sellist(raw_doc)
                 obj_out = conf_obj(target_name)
                 lines = []
-                inner = f'<p>{conf_keyword("select")}</p>'
+                inner = f'<p>{sql_kw("select")}</p>'
                 if sellist:
                     for sl in sellist.splitlines():
                         sl = sl.strip()
                         if sl:
-                            inner += (f'<p style="margin-left:40px;">'
-                                      f'{colorize_text(sl)}</p>')
-                inner += f'<p>{conf_keyword("from")} {obj_out}</p>'
+                            inner += f'<p>{colorize_sql_line(sl)}</p>'
+                inner += f'<p>{sql_kw("from")} {obj_out}</p>'
                 if rest_doc:
                     for rd in rest_doc.splitlines():
                         rd = rd.strip()
                         if rd:
-                            inner += (f'<p style="margin-left:40px;">'
-                                      f'<span style="{C_GRAY}">{colorize_text(rd)}</span></p>')
-                lines.append(
-                    f'__BLOCK__<div style="border:1px solid #dde0d8;border-radius:4px;'
-                    f'background:#f8f8f0;padding:8px;margin:4px 0;">{inner}</div>'
-                )
+                            inner += f'<p>{colorize_sql_line(rd)}</p>'
+                lines.append(f'__BLOCK__{_sql_div(inner)}')
                 return "\n".join(lines)
             elif label.lower() == "update":
                 updlist, rest_doc = extract_updlist(raw_doc)
                 obj_out   = conf_obj(target_name)
                 lines = []
-                lines.append(f'__BLOCK__<p>{conf_keyword("update")} {obj_out}</p>')
+                inner  = f'<p>{sql_kw("update")} {obj_out}</p>'
                 if updlist:
                     for ul in updlist.splitlines():
                         ul = ul.strip()
                         if ul:
-                            lines.append(
-                                f'__BLOCK__<p style="margin-left:40px;">'
-                                f'{colorize_text(ul)}</p>'
-                            )
+                            inner += f'<p>{colorize_sql_line(ul)}</p>'
                 if rest_doc:
                     for rd in rest_doc.splitlines():
                         rd = rd.strip()
                         if rd:
-                            lines.append(
-                                f'__BLOCK__<p style="margin-left:40px;">'
-                                f'<span style="{C_GRAY}">{colorize_text(rd)}</span></p>'
-                            )
+                            inner += f'<p>{colorize_sql_line(rd)}</p>'
+                lines.append(f'__BLOCK__{_sql_div(inner)}')
                 return "\n".join(lines)
             else:
                 label_out = conf_keyword(f"{label} {dir_word}")
@@ -454,14 +536,35 @@ def resolve_abbreviations(description, source_id, relations, elements, profiles)
         }
         kw_map   = _IN if incoming else _OUT
         rel_keyword = kw_map.get(rel_type, rel_type.replace("Relationship", "").lower())
-        doc      = get_doc(rel)
-        obj_out  = conf_obj(f"«{display_type(other_type)}»{other_name}")
-        desc_out = f' <span style="{C_GRAY}">{colorize_text(doc)}</span>' if doc else ""
-        biz_out  = ""
-        if rel_type in ("TriggeringRelationship", "ServingRelationship") and other_el is not None:
+        doc     = get_doc(rel)
+        obj_out = conf_obj(f"«{display_type(other_type)}»{other_name}")
+        biz_out = ""
+        if rel_type == "TriggeringRelationship" and other_el is not None and not doc:
             biz_desc = extract_business_description(get_doc(other_el))
             if biz_desc:
-                biz_out = f' <em><span style="{C_GRAY}">({colorize_text(biz_desc)})</span></em>'
+                biz_out = f' <span style="{C_GRAY};font-style: italic;">({colorize_text(biz_desc)})</span>'
+        elif rel_type == "ServingRelationship" and other_el is not None:
+            biz_desc = extract_business_description(get_doc(other_el))
+            if biz_desc:
+                biz_out = f' <span style="{C_GRAY};font-style: italic;">({colorize_text(biz_desc)})</span>'
+        # Pre-process relation doc for <tbl> blocks
+        if doc:
+            doc_proc = _TBL_RE.sub(_tbl_to_block, doc)
+            if '__BLOCK__' in doc_proc:
+                lines = [f'{conf_keyword(rel_keyword)} {obj_out}{biz_out}']
+                for part in doc_proc.splitlines():
+                    part = part.strip()
+                    if not part:
+                        continue
+                    if part.startswith('__BLOCK__'):
+                        lines.append(part)
+                    else:
+                        lines.append(f'__BLOCK__<p><span style="{C_GRAY}">{colorize_text(part)}</span></p>')
+                return '\n'.join(lines)
+            else:
+                desc_out = f' <span style="{C_GRAY}">{colorize_text(doc_proc)}</span>'
+        else:
+            desc_out = ""
         return f'{conf_keyword(rel_keyword)} {obj_out}{desc_out}{biz_out}'
 
     new_text = pattern.sub(replace, description)
@@ -473,16 +576,17 @@ def resolve_abbreviations(description, source_id, relations, elements, profiles)
 # ---------------------------------------------------------------------------
 
 def _inject_style(m, extra_style):
-    """Inject extra_style into a <p> tag matched by regex."""
-    existing = (m.group(1) or "").strip()
+    """Inject extra_style into a <p> or <div> tag matched by regex."""
+    tag = m.group(1)
+    existing = (m.group(2) or "").strip()
     if 'style=' in existing:
         # append to existing style="..."
         new_attr = re.sub(r'style="([^"]*)"', lambda s: f'style="{s.group(1)};{extra_style}"', existing)
-        return f'<p {new_attr}>'
+        return f'<{tag} {new_attr}>'
     elif existing:
-        return f'<p {existing} style="{extra_style}">'
+        return f'<{tag} {existing} style="{extra_style}">'
     else:
-        return f'<p style="{extra_style}">'
+        return f'<{tag} style="{extra_style}">'
 
 
 OPEN_TAG_RE  = re.compile(r'^<(?!/)(?!.*</)(.+)>$')
@@ -518,6 +622,74 @@ def _split_blocks(text):
     return segments
 
 
+def _tbl_to_block(m):
+    """Convert <tbl>...</tbl> content to a __BLOCK__ HTML table."""
+    content = m.group(1)
+    non_empty = [(i, l.rstrip()) for i, l in enumerate(content.splitlines())
+                 if l.strip()]
+    if not non_empty:
+        return m.group(0)
+
+    rows          = []          # list of rows; each row = list of cell-line-lists
+    current_cells = None        # row being built
+    last_cell_open = False      # last cell is still accepting continuation lines
+
+    for idx, (_, line) in enumerate(non_empty):
+        is_last   = (idx == len(non_empty) - 1)
+        ends_row  = line.endswith('|') or is_last
+        if not line.endswith('|') and is_last:
+            line = line + '|'   # implicit trailing pipe on final line
+
+        parts = line.split('|')
+        if parts and parts[-1] == '':
+            parts = parts[:-1]
+
+        if current_cells is None:
+            # Start a new row
+            current_cells  = [[p.strip()] for p in parts]
+            last_cell_open = not ends_row
+        else:
+            # Continuation: first segment appends to last open cell;
+            # remaining segments are new cells
+            if last_cell_open and current_cells:
+                current_cells[-1].append(parts[0])     # keep leading whitespace
+                for p in parts[1:]:
+                    current_cells.append([p.strip()])
+            else:
+                for p in parts:
+                    current_cells.append([p.strip()])
+            last_cell_open = not ends_row
+
+        if ends_row:
+            rows.append(current_cells)
+            current_cells  = None
+            last_cell_open = False
+
+    if not rows:
+        return m.group(0)
+
+    _TD_STYLE    = 'border:1px solid #dde0d8;padding:4px 8px;text-align:left;'
+    _THEAD_STYLE = 'background:#f0f0ec;font-size:11px;font-weight:bold;'
+
+    def cell_html(cell_lines):
+        return '<br/>'.join(colorize_text(l) for l in cell_lines)
+
+    html = '<table style="border-collapse:collapse;border:1px solid #dde0d8;font-size:12px;">'
+    for row_idx, row in enumerate(rows):
+        if row_idx == 0:
+            html += f'<thead><tr style="{_THEAD_STYLE}">'
+            for cell in row:
+                html += f'<td style="{_TD_STYLE}">{cell_html(cell)}</td>'
+            html += '</tr></thead><tbody>'
+        else:
+            html += '<tr>'
+            for cell in row:
+                html += f'<td style="{_TD_STYLE}">{cell_html(cell)}</td>'
+            html += '</tr>'
+    html += '</tbody></table>'
+    return f'__BLOCK__{html}'
+
+
 def render_description_conf(processed_text, indent_base=0):
     """
     Convert processed description text (after abbreviation resolution) to
@@ -526,15 +698,13 @@ def render_description_conf(processed_text, indent_base=0):
     """
     # pre-process <sql>...</sql> blocks into bordered monospace __BLOCK__ elements
     def _sql_to_block(m):
-        sql_html = "<br>".join(
-            escape(l) for l in m.group(1).strip().splitlines() if l.strip()
+        lines_html = "".join(
+            f'<p>{colorize_sql_line(l)}</p>'
+            for l in m.group(1).strip().splitlines() if l.strip()
         )
-        return (
-            f'__BLOCK__<pre style="font-family:monospace;font-size:13px;margin:4px 0;'
-            f'background:#f8f8f0;padding:8px;border:1px solid #dde0d8;border-radius:4px;">'
-            f'{sql_html}</pre>'
-        )
+        return f'__BLOCK__{_sql_div(lines_html)}'
     processed_text = _SQL_RE.sub(_sql_to_block, processed_text)
+    processed_text = _TBL_RE.sub(_tbl_to_block, processed_text)
 
     parts = []
     depth = 0   # current loop nesting depth
@@ -544,9 +714,9 @@ def render_description_conf(processed_text, indent_base=0):
         if kind == 'block':
             # pre-rendered HTML block — inject loop indent if needed
             if depth > 0:
-                indent_style = f'margin-left:{indent_base + depth * 40}px;'
+                indent_style = f'margin-left:{indent_base + depth * 20}px;'
                 line = re.sub(
-                    r'<p(\s[^>]*)?>',
+                    r'<(p|div|table)(\s[^>]*)?>',
                     lambda m: _inject_style(m, indent_style),
                     line, count=1
                 )
@@ -568,7 +738,7 @@ def render_description_conf(processed_text, indent_base=0):
 
         # skip "technically:" label line
         if re.match(r'^technically\s*:?\s*$', line, re.IGNORECASE):
-            parts.append(f'<p class="technically-label"><strong>Technically</strong>:</p>')
+            parts.append(f'<p><strong>Technically</strong>:</p>')
             continue
 
         m_open  = OPEN_TAG_RE.match(line)
@@ -577,11 +747,13 @@ def render_description_conf(processed_text, indent_base=0):
         if m_open:
             depth += 1
             tag_content = m_open.group(1)
-            parts.append(f'<p class="loop-label">&lt;{escape(tag_content)}&gt;</p>')
+            colored = colorize_text(tag_content)
+            parts.append(f'<p><span style="font-size: 14px; font-style: italic; color: #999; margin-top: 4px;">&lt;{colored}&gt;</span></p>')
 
         elif m_close:
             tag_content = m_close.group(1)
-            parts.append(f'<p class="loop-end-label">&lt;/{escape(tag_content)}&gt;</p>')
+            colored = colorize_text(tag_content)
+            parts.append(f'<p><span style="font-size: 14px; font-style: italic; color: #999; margin-top: 4px;">&lt;/{colored}&gt;</span></p>')
             depth -= 1
 
         elif line.startswith("__COMPOSE__") and line.endswith("__"):
@@ -589,12 +761,12 @@ def render_description_conf(processed_text, indent_base=0):
             parts.append(line)
 
         else:
-            margin = indent_base + depth * 40
+            margin = indent_base + depth * 20
             margin_style = f' style="margin-left:{margin}px;"' if margin else ""
             # if line already contains HTML tags (from resolved abbreviations), don't re-colorize
             # the whole line (would double-escape existing HTML). Instead apply variable {x}
             # and constant 'X' colorization only to plain-text segments between HTML tags.
-            if '<span' in line or '<code' in line or '<em' in line:
+            if '<span' in line or '<code' in line:
                 chunks = []
                 pos = 0
                 for tm in re.finditer(r'<[^>]+>', line):
@@ -614,7 +786,16 @@ def render_description_conf(processed_text, indent_base=0):
             else:
                 parts.append(f'<p{margin_style}>{colorize_text(line)}</p>')
 
-    return "\n".join(parts)
+    html = "\n".join(parts)
+    # Insert a blank line between any two consecutive <table> blocks, even when
+    # separated only by whitespace / <section> / </section> tags.
+    _TABLE_SEP = '<p style="margin:0;line-height:1em;">&nbsp;</p>'
+    html = re.sub(
+        r'</table>((?:\s*</?section>)*\s*)<table',
+        lambda m: f'</table>{m.group(1)}{_TABLE_SEP}<table',
+        html
+    )
+    return html
 
 
 # ---------------------------------------------------------------------------
@@ -702,10 +883,11 @@ _ACCESS_DIR_LABELS = {"read", "write", "select", "read/write", "update"}
 
 
 def _relations_html(rows, used_ids, empty_msg, incoming=False):
+    _note_style = 'font-size: 14px; color: #888; font-style: italic;'
     if not rows and used_ids and not incoming:
-        return '<p class="relations-note">All relations already described above.</p>'
+        return f'<p style="{_note_style}">All relations already described above.</p>'
     if not rows:
-        return f'<p class="relations-note">{empty_msg}</p>'
+        return f'<p style="{_note_style}">{empty_msg}</p>'
 
     from collections import OrderedDict
     groups = OrderedDict()
@@ -726,7 +908,7 @@ def _relations_html(rows, used_ids, empty_msg, incoming=False):
             display = label
         lines.append(f'<p>{conf_keyword(display)}:</p>')
         for nm, biz in items:
-            biz_part = (f' <em><span style="{C_GRAY}">({colorize_text(biz)})</span></em>'
+            biz_part = (f' <span style="{C_GRAY};font-style: italic;">({colorize_text(biz)})</span>'
                         if biz else "")
             lines.append(f'<p style="margin-left:20px;">- {conf_obj(nm)}{biz_part}</p>')
     return "\n".join(lines)
@@ -759,29 +941,7 @@ def expand_compositions(body_html, parent_id, parent_type,
 # Full document renderer
 # ---------------------------------------------------------------------------
 
-CSS = """
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      font-size: 15px; line-height: 1.7; color: #1a1a1a;
-      background: #ffffff; padding: 2rem; max-width: 960px; margin: 0 auto;
-    }
-    h1 { font-size: 22px; font-weight: 500; margin-bottom: 2rem; color: #1a1a1a; }
-    h1 span { font-size: 14px; font-weight: 400; color: #888; margin-right: 8px; }
-    h2 { font-size: 17px; font-weight: 500; margin-bottom: 0.5rem; color: #1a1a1a; }
-    p { margin-bottom: 0.35rem; }
-    .technically-label { margin-top: 0.6rem; margin-bottom: 0.2rem; }
-    .loop-label     { font-size: 14px; font-style: italic; color: #999; margin-top: 4px; }
-    .loop-end-label { font-size: 14px; font-style: italic; color: #999; margin-bottom: 4px; }
-    .relations-note { font-size: 14px; color: #888; font-style: italic; margin-bottom: 2px; }
-    code { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
-           font-size: 12px; background: #f0efeb; padding: 1px 5px; border-radius: 4px; }
-    strong { font-weight: 600; }
-    section { margin-bottom: 2rem; }
-    .rel-section-label { font-size: 13px; font-weight: 500; color: #888;
-                         text-transform: uppercase; letter-spacing: 0.05em;
-                         margin-bottom: 4px; margin-top: 0.75rem; }
-"""
+CSS = ""  # v4: no embedded stylesheet — all styling is inline
 
 
 def build_full_html(el_name, el_type, body_html,
@@ -794,13 +954,13 @@ def build_full_html(el_name, el_type, body_html,
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{escape(el_name)} \u2014 Spec v3</title>
-  <style>{CSS}</style>
+  <title>{escape(el_name)} \u2014 Spec v4</title>
+
 </head>
 <body>
 
-<h1><span>«{escape(display_type(el_type))}»</span>{escape(el_name)}</h1>
-
+<h1><span style="color:var(--ds-chart-gray-bold,#8590a2);">«{escape(display_type(el_type))}»</span>{escape(el_name)}</h1>
+{escape(el_name)} \u2014 Spec v4
 <section>
 {body_html}
 </section>
@@ -858,6 +1018,8 @@ def collect_relation_rows(el_id, el_type, relations, elements, profiles, used_id
             target_el   = elements.get(rel.get("target"))
             label       = access_type_label(rel, get_profile_name(rel, profiles))
             target_name = get_name(target_el)
+            if target_name.lower().startswith('[parameters]'):
+                continue  # [parameters] suppressed from Related context
             rel_doc     = get_doc(rel)
             if label.lower() == "select" and target_name.lower().startswith("[select]"):
                 outgoing_rows.append((label, target_name, rel_doc,
@@ -874,9 +1036,11 @@ def collect_relation_rows(el_id, el_type, relations, elements, profiles, used_id
         elif rel_type == "TriggeringRelationship":
             target_el = elements.get(rel.get("target"))
             tgt_type  = get_type(target_el) if target_el is not None else ""
-            biz       = extract_business_description(get_doc(target_el)) if target_el is not None else ""
+            rel_doc   = get_doc(rel)
+            biz       = (extract_business_description(get_doc(target_el))
+                         if target_el is not None and not rel_doc else "")
             outgoing_rows.append(("triggers",
-                                  f"«{display_type(tgt_type)}»{get_name(target_el)}", "", biz))
+                                  f"«{display_type(tgt_type)}»{get_name(target_el)}", rel_doc, biz))
 
         elif rel_type == "ServingRelationship":
             target_el = elements.get(rel.get("target"))
@@ -921,9 +1085,11 @@ def collect_relation_rows(el_id, el_type, relations, elements, profiles, used_id
         elif rel_type == "TriggeringRelationship":
             source_el = elements.get(rel.get("source"))
             src_type  = get_type(source_el) if source_el is not None else ""
-            biz       = extract_business_description(get_doc(source_el)) if source_el is not None else ""
+            rel_doc   = get_doc(rel)
+            biz       = (extract_business_description(get_doc(source_el))
+                         if source_el is not None and not rel_doc else "")
             incoming_rows.append(("is triggered by",
-                                  f"«{display_type(src_type)}»{get_name(source_el)}", "", biz))
+                                  f"«{display_type(src_type)}»{get_name(source_el)}", rel_doc, biz))
 
         elif rel_type == "ServingRelationship":
             source_el = elements.get(rel.get("source"))
@@ -1003,7 +1169,7 @@ def main():
     safe_name = re.sub(r"[^\w\s-]", "", element_name).strip().replace(" ", "_").lower()
     out_dir   = r"c:\temp"
     os.makedirs(out_dir, exist_ok=True)
-    out_path  = os.path.join(out_dir, f"{safe_name}_spec_v3.html")
+    out_path  = os.path.join(out_dir, f"{safe_name}_spec_v4.html")
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(html)
 
